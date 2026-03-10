@@ -1,0 +1,317 @@
+#!/usr/bin/env python3
+"""
+بوت متكامل مع جميع أنظمة الربح - نسخة Termux
+"""
+
+import logging
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+import random
+from datetime import datetime
+
+# استيراد الأنظمة الخاصة بنا
+import withdrawal_system
+import daily_offers
+
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+                    level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+TOKEN = "8621321021:AAEPwkX2VWTA5krSvIJ5pyh7kkfHwm0yK5o" 
+ 
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """القائمة الرئيسية"""
+    user = update.effective_user
+    user_id = user.id
+    
+    # التأكد من وجود المستخدم
+    coins = withdrawal_system.get_user_coins(user_id)
+    
+    # حساب الأيام المتتالية
+    streak = daily_offers.get_streak(user_id)
+    
+    keyboard = [
+        [InlineKeyboardButton("💰 رصيدي", callback_data="balance")],
+        [InlineKeyboardButton("🎮 ألعاب", callback_data="games_menu")],
+        [InlineKeyboardButton("💸 سحب أرباح", callback_data="withdraw_menu")],
+        [InlineKeyboardButton("🌟 مكافأة يومية", callback_data="daily")],
+        [InlineKeyboardButton("🏆 إحصائياتي", callback_data="stats")]
+    ]
+    
+    await update.message.reply_text(
+        f"👋 مرحباً {user.first_name}!\n\n"
+        f"💰 رصيدك: {coins} قطعة\n"
+        f"🔥 أيام متتالية: {streak}\n\n"
+        "اختر من القائمة:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """معالجة جميع الأزرار"""
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    data = query.data
+    
+    if data == "balance":
+        coins = withdrawal_system.get_user_coins(user_id)
+        await query.edit_message_text(
+            f"💰 رصيدك الحالي: {coins} قطعة\n"
+            f"💵 يعادل: ${coins/100:.2f}"
+        )
+    
+    elif data == "games_menu":
+        keyboard = [
+            [InlineKeyboardButton("🎲 تخمين الرقم", callback_data="game_guess")],
+            [InlineKeyboardButton("🎰 حجر ورقة مقص", callback_data="game_rps")],
+            [InlineKeyboardButton("🔙 رجوع", callback_data="back_main")]
+        ]
+        await query.edit_message_text(
+            "🎮 اختر لعبة:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    
+    elif data == "game_guess":
+        # تخزين الرقم السري
+        secret = random.randint(1, 10)
+        context.user_data['secret_number'] = secret
+        context.user_data['game_active'] = True
+        
+        keyboard = []
+        for i in range(1, 11):
+            keyboard.append([InlineKeyboardButton(str(i), callback_data=f"guess_{i}")])
+        keyboard.append([InlineKeyboardButton("🔙 إلغاء", callback_data="games_menu")])
+        
+        await query.edit_message_text(
+            "🔢 اختر رقماً من 1 إلى 10:\n"
+            "إذا أصبت تربح 30 قطعة!",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    
+    elif data.startswith("guess_") and context.user_data.get('game_active'):
+        guess = int(data.replace("guess_", ""))
+        secret = context.user_data.get('secret_number')
+        
+        if guess == secret:
+            withdrawal_system.update_user_coins(user_id, 30)
+            result = f"🎉 أصبت! الرقم كان {secret}\nكسبت 30 قطعة!"
+        else:
+            withdrawal_system.update_user_coins(user_id, -5)
+            result = f"😢 خطأ! الرقم كان {secret}\nخسرت 5 قطع!"
+        
+        context.user_data['game_active'] = False
+        coins = withdrawal_system.get_user_coins(user_id)
+        
+        keyboard = [[InlineKeyboardButton("🔙 رجوع", callback_data="games_menu")]]
+        await query.edit_message_text(
+            f"{result}\n💰 رصيدك الآن: {coins}",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    
+    elif data == "game_rps":
+        keyboard = [
+            [InlineKeyboardButton("🪨 حجر", callback_data="rps_rock")],
+            [InlineKeyboardButton("📄 ورقة", callback_data="rps_paper")],
+            [InlineKeyboardButton("✂️ مقص", callback_data="rps_scissors")],
+            [InlineKeyboardButton("🔙 رجوع", callback_data="games_menu")]
+        ]
+        await query.edit_message_text(
+            "اختر:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    
+    elif data.startswith("rps_"):
+        user_choice = data.replace("rps_", "")
+        bot_choice = random.choice(["rock", "paper", "scissors"])
+        
+        choices = {
+            "rock": "🪨 حجر",
+            "paper": "📄 ورقة", 
+            "scissors": "✂️ مقص"
+        }
+        
+        if user_choice == bot_choice:
+            result = "🤝 تعادل!"
+            coins_change = 0
+        elif ((user_choice == "rock" and bot_choice == "scissors") or
+              (user_choice == "paper" and bot_choice == "rock") or
+              (user_choice == "scissors" and bot_choice == "paper")):
+            result = "🎉 فوز!"
+            coins_change = 20
+        else:
+            result = "😢 خسارة!"
+            coins_change = -10
+        
+        if coins_change != 0:
+            withdrawal_system.update_user_coins(user_id, coins_change)
+        
+        coins = withdrawal_system.get_user_coins(user_id)
+        
+        await query.edit_message_text(
+            f"اخترت: {choices[user_choice]}\n"
+            f"البوت اختار: {choices[bot_choice]}\n\n"
+            f"{result}\n"
+            f"{'+' if coins_change > 0 else ''}{coins_change} قطعة\n"
+            f"💰 رصيدك: {coins}"
+        )
+    
+    elif data == "withdraw_menu":
+        coins = withdrawal_system.get_user_coins(user_id)
+        
+        keyboard = [
+            [InlineKeyboardButton("💳 PayPal", callback_data="withdraw_paypal")],
+            [InlineKeyboardButton("₿ عملات رقمية", callback_data="withdraw_crypto")],
+            [InlineKeyboardButton("📱 فودافون كاش", callback_data="withdraw_vodafone")],
+            [InlineKeyboardButton("📜 طلباتي", callback_data="my_withdrawals")],
+            [InlineKeyboardButton("🔙 رجوع", callback_data="back_main")]
+        ]
+        
+        await query.edit_message_text(
+            f"💸 **سحب الأرباح**\n\n"
+            f"رصيدك: {coins} قطعة (${coins/100:.2f})\n"
+            f"الحد الأدنى: 500 قطعة (5$)\n\n"
+            f"اختر طريقة السحب:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='Markdown'
+        )
+    
+    elif data.startswith("withdraw_"):
+        method = data.replace("withdraw_", "")
+        context.user_data['withdraw_method'] = method
+        
+        await query.edit_message_text(
+            f"💰 أدخل المبلغ الذي تريد سحبه بالقطع (الحد الأدنى 500):\n"
+            f"(مثال: 500 = 5$)\n\n"
+            f"الطريقة: {method}",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("❌ إلغاء", callback_data="withdraw_menu")
+            ]])
+        )
+        context.user_data['awaiting_amount'] = True
+    
+    elif data == "daily":
+        success, message = daily_offers.claim_daily_reward(user_id)
+        streak = daily_offers.get_streak(user_id)
+        coins = withdrawal_system.get_user_coins(user_id)
+        
+        await query.edit_message_text(
+            f"{message}\n"
+            f"🔥 أيام متتالية: {streak}\n"
+            f"💰 رصيدك: {coins}"
+        )
+    
+    elif data == "stats":
+        coins = withdrawal_system.get_user_coins(user_id)
+        streak = daily_offers.get_streak(user_id)
+        
+        # حساب إجمالي السحوبات
+        conn = sqlite3.connect(withdrawal_system.DB_FILE)
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*), SUM(amount_usd) FROM withdrawals WHERE user_id = ? AND status='completed'",
+                  (user_id,))
+        withdrawals_count, withdrawals_total = c.fetchone()
+        conn.close()
+        
+        await query.edit_message_text(
+            f"🏆 **إحصائياتك**\n\n"
+            f"💰 الرصيد: {coins} قطعة\n"
+            f"🔥 أيام متتالية: {streak}\n"
+            f"💸 عدد السحوبات: {withdrawals_count or 0}\n"
+            f"💵 إجمالي المسحوب: ${withdrawals_total or 0:.2f}",
+            parse_mode='Markdown'
+        )
+    
+    elif data == "back_main":
+        await start(update, context)
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """معالجة الرسائل النصية (للسحب)"""
+    if context.user_data.get('awaiting_amount'):
+        try:
+            amount = int(update.message.text)
+            user_id = update.effective_user.id
+            coins = withdrawal_system.get_user_coins(user_id)
+            
+            if amount < 500:
+                await update.message.reply_text("❌ الحد الأدنى 500 قطعة")
+            elif amount > coins:
+                await update.message.reply_text(f"❌ رصيدك غير كافٍ! لديك {coins} قطعة")
+            else:
+                method = context.user_data.get('withdraw_method', 'paypal')
+                
+                # إنشاء طلب سحب
+                withdrawal_id = withdrawal_system.create_withdrawal(
+                    user_id, amount, method, "في انتظار التفاصيل"
+                )
+                
+                # طلب تفاصيل الدفع
+                context.user_data['withdrawal_id'] = withdrawal_id
+                context.user_data['awaiting_details'] = True
+                context.user_data['awaiting_amount'] = False
+                
+                if method == 'paypal':
+                    await update.message.reply_text("📧 أرسل بريد PayPal الإلكتروني:")
+                elif method == 'crypto':
+                    await update.message.reply_text("🔑 أرسل عنوان محفظتك الرقمية:")
+                elif method == 'vodafone':
+                    await update.message.reply_text("📱 أرسل رقم فودافون كاش:")
+                    
+        except ValueError:
+            await update.message.reply_text("❌ الرجاء إدخال رقم صحيح")
+    
+    elif context.user_data.get('awaiting_details'):
+        details = update.message.text
+        withdrawal_id = context.user_data.get('withdrawal_id')
+        
+        # تحديث التفاصيل في قاعدة البيانات
+        conn = sqlite3.connect(withdrawal_system.DB_FILE)
+        c = conn.cursor()
+        c.execute("UPDATE withdrawals SET details = ? WHERE id = ?", (details, withdrawal_id))
+        conn.commit()
+        conn.close()
+        
+        await update.message.reply_text(
+            f"✅ تم تقديم طلب السحب بنجاح!\n"
+            f"رقم الطلب: {withdrawal_id}\n"
+            f"سيتم معالجته خلال 24 ساعة"
+        )
+        
+        context.user_data.pop('awaiting_details', None)
+        context.user_data.pop('withdrawal_id', None)
+
+async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """أمر الرصيد"""
+    user_id = update.effective_user.id
+    coins = withdrawal_system.get_user_coins(user_id)
+    await update.message.reply_text(f"💰 رصيدك: {coins} قطعة (${coins/100:.2f})")
+
+async def daily_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """أمر المكافأة اليومية"""
+    user_id = update.effective_user.id
+    success, message = daily_offers.claim_daily_reward(user_id)
+    streak = daily_offers.get_streak(user_id)
+    await update.message.reply_text(f"{message}\n🔥 الأيام المتتالية: {streak}")
+
+def main():
+    """تشغيل البوت"""
+    app = Application.builder().token(TOKEN).build()
+    
+    # الأوامر
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("balance", balance_command))
+    app.add_handler(CommandHandler("daily", daily_command))
+    
+    # الأزرار
+    app.add_handler(CallbackQueryHandler(button_handler))
+    
+    # الرسائل النصية
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    print("🤖 البوت المتكامل يعمل على Termux...")
+    print("📱 اضغط Ctrl+C للإيقاف")
+    app.run_polling()
+
+if __name__ == '__main__':
+    main()
